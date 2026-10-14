@@ -1,0 +1,132 @@
+SOC LIVE REPORT - started: 2026-10-14 02:38:53
+  source 1: /var/log/apache2/access.log (access)
+  source 2: /var/log/nginx/access.log (access)
+  source 3: /var/log/apache2/other_vhosts_access.log (access)
+  source 4: /var/log/auth.log (auth)
+  source 5: /var/log/syslog (syslog)
+  source 6: /var/log/kern.log (kern)
+  source 7: /var/log/apache2/error.log (weberror)
+  source 8: /var/log/nginx/error.log (weberror)
+  source 9: /var/log/dpkg.log (dpkg)
+  source 10: /var/log/cron.log (cron)
+  source 11: /var/log/postgresql/postgresql-18-main.log (postgres)
+  source 12: /var/log/lightdm/lightdm.log (generic)
+========================================================================
+[LOW] Unusual Hour Activity | 192.168.1.28
+Detected at : 2026-10-14 02:46:45
+Log time    : 2026-10-14 02:46:45 -0400
+Source IP   : 192.168.1.28
+Request     : GET /
+Status/Size : 200 / 657079 bytes
+User-Agent  : Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0
+Why         : Activity at 02:46 falls in the configured quiet hours.
+Action      : Check if this access is expected.
+========================================================================
+[HIGH] Scanner / Attack Tool | 192.168.1.28
+Detected at : 2026-10-14 02:48:38
+Log time    : 2026-10-14 02:48:38 -0400
+Source IP   : 192.168.1.28
+Request     : GET /
+Status/Size : 200 / 657023 bytes
+User-Agent  : gobuster/3.8.2
+Why         : The user agent matches a known scanning or attack tool.
+Action      : Block the IP in the firewall and review what else it requested.
+========================================================================
+[LOW] User-Agent Change | 192.168.1.28
+Detected at : 2026-10-14 02:48:38
+Log time    : 2026-10-14 02:48:38 -0400
+Source IP   : 192.168.1.28
+Request     : GET /
+Status/Size : 200 / 657023 bytes
+User-Agent  : gobuster/3.8.2
+Why         : The same IP switched user agent within 600 seconds, which can hide a scanner.
+Action      : Compare both user agents and check the IP's other requests.
+========================================================================
+[MEDIUM] Sensitive Path Probe | 192.168.1.28
+Detected at : 2026-10-14 02:48:38
+Log time    : 2026-10-14 02:48:38 -0400
+Source IP   : 192.168.1.28
+Request     : GET /cgi-bin
+Status/Size : 404 / 475 bytes
+User-Agent  : gobuster/3.8.2
+Why         : The request targets an admin, config or management path that attackers commonly probe.
+Action      : Restrict this path by IP or password and review the IP's other requests.
+-- REPEAT [HIGH] Scanner / Attack Tool from 192.168.1.28: 10 hits so far (last log time 2026-10-14 02:48:38 -0400)
+========================================================================
+[MEDIUM] Directory Enumeration / Scan | 192.168.1.28
+Detected at : 2026-10-14 02:48:38
+Log time    : 2026-10-14 02:48:38 -0400
+Source IP   : 192.168.1.28
+Request     : GET /no
+Status/Size : 404 / 475 bytes
+User-Agent  : gobuster/3.8.2
+Why         : 40 'Not Found' errors in 60 seconds, typical of gobuster/dirb style scanning.
+Action      : Block the IP and review which paths it guessed.
+-- REPEAT [HIGH] Scanner / Attack Tool from 192.168.1.28: 100 hits so far (last log time 2026-10-14 02:48:38 -0400)
+========================================================================
+[HIGH] Request Flood / DoS | 192.168.1.28
+Detected at : 2026-10-14 02:48:38
+Log time    : 2026-10-14 02:48:38 -0400
+Source IP   : 192.168.1.28
+Request     : GET /revision
+Status/Size : 404 / 475 bytes
+User-Agent  : gobuster/3.8.2
+Why         : 100 requests in 10 seconds from one IP.
+Action      : Rate-limit or block the IP (mod_evasive, mod_qos, firewall).
+-- REPEAT [HIGH] Scanner / Attack Tool from 192.168.1.28: 1000 hits so far (last log time 2026-10-14 02:48:39 -0400)
+-- REPEAT [HIGH] Scanner / Attack Tool from 192.168.1.28: 10000 hits so far (last log time 2026-10-14 02:48:46 -0400)
+========================================================================
+[LOW] SQLi Probe (quote/comment) | 192.168.1.28
+Detected at : 2026-10-14 02:48:57
+Log time    : 2026-10-14 02:48:57 -0400
+Source IP   : 192.168.1.28
+Request     : GET /Conway%2527s_Game_of_Life
+Status/Size : 404 / 475 bytes
+User-Agent  : gobuster/3.8.2
+Why         : A single quote or SQL comment appeared in the request, often the first step of SQL injection testing.
+Action      : Watch this IP; check whether the parameter is validated.
+========================================================================
+[LOW] AUTH: SSH Failed Login | 192.168.1.28
+Detected at : 2026-10-14 02:49:23
+Log time    : 2026-10-14 02:49:23 -0400
+Source IP   : 192.168.1.28
+Request     : SSH Failed password for kali from 192.168.1.28 port 46236 ssh2
+Status/Size : 0 / 0 bytes
+User-Agent  : user=kali
+Why         : A failed SSH login for user 'kali'.
+Action      : Watch this IP; use key-based login and fail2ban.
+-- REPEAT [LOW] AUTH: SSH Failed Login from 192.168.1.28: 10 hits so far (last log time 2026-10-14 02:49:23 -0400)
+-- REPEAT [LOW] SQLi Probe (quote/comment) from 192.168.1.28: 10 hits so far (last log time 2026-10-14 02:49:31 -0400)
+========================================================================
+[HIGH] Command Injection | 192.168.1.28
+Detected at : 2026-10-14 02:49:33
+Log time    : 2026-10-14 02:49:33 -0400
+Source IP   : 192.168.1.28
+Request     : GET /WhoamI
+Status/Size : 404 / 475 bytes
+User-Agent  : gobuster/3.8.2
+Why         : The request contains shell commands or operators that try to run commands on the server.
+Action      : Block the IP and review any code that passes parameters to a shell.
+========================================================================
+[HIGH] AUTH: SSH Brute Force | 192.168.1.28
+Detected at : 2026-10-14 02:49:34
+Log time    : 2026-10-14 02:49:34 -0400
+Source IP   : 192.168.1.28
+Request     : SSH Failed password for kali from 192.168.1.28 port 46346 ssh2
+Status/Size : 0 / 0 bytes
+User-Agent  : user=kali
+Why         : 50 failed SSH logins in 60 seconds from one IP.
+Action      : Block the IP in the firewall, disable password login, install fail2ban.
+-- REPEAT [HIGH] Scanner / Attack Tool from 192.168.1.28: 100000 hits so far (last log time 2026-10-14 02:49:50 -0400)
+-- REPEAT [LOW] AUTH: SSH Failed Login from 192.168.1.28: 100 hits so far (last log time 2026-10-14 02:49:53 -0400)
+-- REPEAT [HIGH] Request Flood / DoS from 192.168.1.28: 10 hits so far (last log time 2026-10-14 02:50:08 -0400)
+========================================================================
+[LOW] Unusual Hour Activity | 127.0.0.1
+Detected at : 2026-10-14 02:50:19
+Log time    : 2026-10-14 02:50:19 -0400
+Source IP   : 127.0.0.1
+Request     : OPTIONS *
+Status/Size : 200 / 126 bytes
+User-Agent  : Apache/2.4.68 (Debian) (internal dummy connection)
+Why         : Activity at 02:50 falls in the configured quiet hours.
+Action      : Check if this access is expected.
