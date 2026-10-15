@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """
-soc_live.py - Live multi-log SOC dashboard (read-only). One pane per log file, shown as a grid.
-Needs soc_analyst.py, soc_auth.py, soc_generic.py in the SAME folder.
+soc_live.py - Live multi-log SOC dashboard (read-only) with an optional IP blocker.
+One pane per log file, shown as a grid.
+Needs soc_analyst.py, soc_auth.py, soc_generic.py, soc_blocker.py in the SAME folder.
 Everything is saved to one report file (+ optional JSONL).
 
 Examples:
   sudo python3 soc_live.py --list                      show which logs it would monitor
   sudo python3 soc_live.py --out report.txt            monitor the default set
-  sudo python3 soc_live.py --all --out report.txt      every readable *.log in /var/log
-  sudo python3 soc_live.py --logs /var/log/auth.log /var/log/syslog /var/log/kern.log:kern
+  sudo python3 soc_live.py --out report.txt --blocker  ask Yes/No before blocking attackers (UFW)
+  sudo python3 soc_live.py --list-blocks               show blocked IPs
+  sudo python3 soc_live.py --unblock 1.2.3.4           remove a block now
+  sudo python3 soc_live.py --blocker-cleanup           remove expired blocks and exit (use with cron)
 
 Keys:
   Tab / Shift-Tab  next / previous pane      1-9  jump to pane N
   [  ]             previous / next page      m    maximize / restore focused pane
   Up / Down        select an alert (PgUp/PgDn = 10, n/Home = newest)
   Enter / d        inspect the selected alert in full (Esc closes)
+  y / n            answer a block question (terminal prompt mode)
   p                pause screen refresh      q    quit and save summary
 """
 import argparse
@@ -30,6 +34,7 @@ from collections import deque
 
 import soc_analyst as sa
 import soc_auth
+import soc_blocker
 import soc_generic
 
 LOG_DIR = "/var/log"
@@ -79,7 +84,7 @@ def capture_alert(rep, entry):
     src.recent.append(item)
     if src.sel > 0:                              # keep a selected older alert in place
         src.sel = min(src.sel + 1, len(src.recent) - 1)
-    popup = getattr(sa, "popup", None)           # exists only if you added the popup patch
+    popup = getattr(sa, "popup", None)           # exists only if you added the old popup patch
     if popup and entry["severity"] in ("HIGH", "CRITICAL"):
         popup("SOC Alert: %s" % entry["severity"],
               "%s from %s" % (entry["rule"], entry["source_ip"]), entry["severity"])
@@ -309,6 +314,21 @@ def draw_detail(scr, col, e):
     scr.refresh()
 
 
+def draw_prompt(put, h, w, text):
+    """Yes/No box in the middle of the screen (terminal prompt mode)."""
+    lines = []
+    for para in text.split("\n"):
+        lines += textwrap.wrap(para, max(20, min(w - 10, 70))) or [""]
+    lines += ["", "[y] Block this IP      [n] Do not block"]
+    bw = max(len(l) for l in lines) + 4
+    x0, y0 = max(0, (w - bw) // 2), max(1, (h - len(lines) - 2) // 2)
+    attr = curses.A_REVERSE | curses.A_BOLD
+    for i in range(len(lines) + 2):
+        put(y0 + i, x0, " " * bw, attr)
+    for i, line in enumerate(lines):
+        put(y0 + 1 + i, x0 + 2, line, attr)
+
+
 def grid_dims(w, body_h, n, per_page):
     cols = 3 if w >= 210 else (2 if w >= 100 else 1)
     rows = max(1, min(2, body_h // 9))
@@ -325,7 +345,8 @@ def draw(scr, col, ctx):
     h, w = scr.getmaxyx()
     put = make_put(scr)
     srcs = ctx["sources"]
-    by, bh = 3, h - 4
+    blocker = ctx["blocker"]
+    by, bh = (4, h - 5) if blocker else (3, h - 4)
     cols, rows, pp = grid_dims(w, bh, len(srcs), ctx["per_page"])
     ctx["pp"] = pp
     if ctx["max"]:
@@ -338,7 +359,7 @@ def draw(scr, col, ctx):
             ctx["page"] = ctx["focus"] // pp
         visible = srcs[ctx["page"] * pp:(ctx["page"] + 1) * pp]
     up = int(time.time() - ctx["started"])
-    put(0, 0, " SOC LIVE MONITOR  (read-only, authorized lab)".ljust(w), curses.A_REVERSE)
+    put(0, 0, " SOCKY LOGGER - LIVE MONITOR  (authorized lab)".ljust(w), curses.A_REVERSE)
     line = "Report: %s | Uptime %02d:%02d:%02d | %.1f lines/s | page %d/%d%s%s" % (
         ctx["out_path"], up // 3600, up % 3600 // 60, up % 60, ctx["lps"], ctx["page"] + 1, pages,
         " | MAXIMIZED" if ctx["max"] else "", " | [PAUSED]" if ctx["paused"] else "")
@@ -350,6 +371,9 @@ def draw(scr, col, ctx):
             hl["cpu"], hl["busy"], hl["cores"], hl["ram"], " STRESSED" if hot else ""),
             col["CRITICAL"] if hot else col["OK"])
     draw_tabs(put, col, ctx)
+    if blocker:
+        text, ok = blocker.status_line()
+        put(3, 0, text, col["OK"] if ok else col["MEDIUM"])
 
     ncols = min(cols, len(visible))
     nrows = math.ceil(len(visible) / ncols)
@@ -365,6 +389,8 @@ def draw(scr, col, ctx):
         draw_pane(put, col, by + r * rh, x0, height, width, src, src.idx == ctx["focus"])
     put(h - 1, 0, " q quit | Tab pane | 1-9 jump | [ ] page | m maximize | Up/Down select | Enter inspect | p pause ".ljust(w - 1),
         curses.A_REVERSE)
+    if blocker and blocker.pending:
+        draw_prompt(put, h, w, blocker.pending[0][1])
     scr.refresh()
 
 
@@ -385,6 +411,10 @@ def change_page(ctx, delta):
 
 def handle_key(key, ctx):
     """Return True if the screen should redraw immediately."""
+    blocker = ctx["blocker"]
+    if blocker and blocker.pending and key in (ord("y"), ord("Y"), ord("n"), ord("N")):
+        blocker.answer(key in (ord("y"), ord("Y")))
+        return True
     if ctx["detail"]:
         if key in (27, 10, 13, curses.KEY_ENTER, ord("d"), ord("D"), ord("q"), ord("Q")):
             ctx["detail"] = None
@@ -445,11 +475,12 @@ def run(scr, args, ctx, rep, nets):
     scr.nodelay(True)
     scr.keypad(True)
     col = init_colors()
+    blocker = ctx["blocker"]
     post = getattr(sa, "apply_health", None)
     if hasattr(sa, "HEALTH_RULES"):
         sa.HEALTH_RULES.update({"AUTH: SSH Brute Force", "MYSQL: Database Brute Force",
                                 "POSTGRES: Database Brute Force"})
-    last_draw, last_clean, last_lines = 0.0, time.time(), 0
+    last_draw, last_clean, last_lines, last_pending = 0.0, time.time(), 0, 0
     while True:
         busy = False
         for src in ctx["sources"]:
@@ -460,6 +491,13 @@ def run(scr, args, ctx, rep, nets):
             for line in lines:
                 process(src, line, rep, nets, post)
             busy = busy or bool(lines)
+        if blocker:
+            blocker.tick()
+            if blocker.pending:
+                ctx["detail"] = None
+                if len(blocker.pending) > last_pending:
+                    curses.beep()
+            last_pending = len(blocker.pending)
         key = scr.getch()
         if key in (ord("q"), ord("Q")) and not ctx["detail"]:
             return
@@ -481,8 +519,13 @@ def run(scr, args, ctx, rep, nets):
             time.sleep(0.05)
 
 
+def make_blocker(args, nets, log):
+    return soc_blocker.Blocker(firewall=args.firewall, state_path=args.blocker_state, prompt=args.prompt,
+                               nets=nets, protect=args.protect or [], dry_run=args.blocker_dry_run, log=log)
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Live multi-log SOC dashboard (read-only).")
+    ap = argparse.ArgumentParser(description="Socky Logger: live multi-log SOC dashboard with optional IP blocker.")
     ap.add_argument("--logs", nargs="*", metavar="PATH[:KIND]",
                     help="logs to monitor (kinds: %s). Default: auto-discover in /var/log" % ", ".join(sorted(KINDS)))
     ap.add_argument("--all", action="store_true", help="also add every other readable *.log in /var/log")
@@ -492,11 +535,32 @@ def main():
     ap.add_argument("--json", action="store_true", help="also write JSON Lines")
     ap.add_argument("--whitelist", default=sa.DEFAULT_WHITELIST, help="IPs/CIDRs to ignore, or 'none'")
     ap.add_argument("--history", action="store_true", help="read existing logs first, then keep watching")
-    ap.add_argument("--popup", action="store_true", help="desktop popups (needs popup patch)")
     ap.add_argument("--health", action="store_true", help="CRITICAL on brute force/scan/DoS when CPU/RAM is high")
     ap.add_argument("--cpu-limit", type=float, default=getattr(sa, "HEALTH_CPU_PCT", 50.0))
     ap.add_argument("--ram-limit", type=float, default=getattr(sa, "HEALTH_RAM_PCT", 80.0))
+    g = ap.add_argument_group("IP blocker (off unless --blocker)")
+    g.add_argument("--blocker", action="store_true", help="ask Yes/No before blocking attacking IPs")
+    g.add_argument("--firewall", choices=["ufw", "iptables"], default="ufw", help="default: ufw")
+    g.add_argument("--prompt", choices=["auto", "gui", "terminal"], default="auto",
+                   help="gui = zenity popup, terminal = y/n box in the dashboard (default: auto)")
+    g.add_argument("--protect", nargs="*", metavar="IP", help="extra IPs that must never be blocked")
+    g.add_argument("--blocker-state", default=soc_blocker.DEFAULT_STATE, help="block list file")
+    g.add_argument("--blocker-dry-run", action="store_true", help="show firewall commands without running them")
+    g.add_argument("--list-blocks", action="store_true", help="show blocked IPs and exit")
+    g.add_argument("--unblock", metavar="IP", help="remove the block for this IP and exit")
+    g.add_argument("--blocker-cleanup", action="store_true", help="remove expired blocks and exit (for cron)")
     args = ap.parse_args()
+    nets = sa.parse_whitelist(args.whitelist)
+
+    if args.list_blocks or args.unblock or args.blocker_cleanup:
+        bl = make_blocker(args, nets, print)
+        if args.list_blocks:
+            print("\n".join(bl.list_blocks()) or "No blocks recorded.")
+        if args.unblock:
+            bl.unblock(args.unblock)
+        if args.blocker_cleanup:
+            print("Removed %d expired block(s)." % bl.cleanup_expired())
+        return 0
 
     found = discover(args)
     if args.list:
@@ -531,22 +595,32 @@ def main():
         for s in sources:
             print("  %s: %s" % (s.path, s.note))
         return 1
-    if args.popup and hasattr(sa, "POPUP_ENABLED"):
-        sa.POPUP_ENABLED = True
-    nets = sa.parse_whitelist(args.whitelist)
     try:
         rep = sa.Reporter(out_path, out_mode, args.json)
     except OSError as e:
         print("ERROR: cannot write report file '%s': %s" % (out_path, e))
         return 1
     rep.color = False
-    rep.text("SOC LIVE REPORT - started: %s" % sa.now_str())
+    rep.text("SOCKY LOGGER REPORT - started: %s" % sa.now_str())
     for s in sources:
         rep.text("  source %d: %s (%s)%s" % (s.idx + 1, s.path, s.kind, "" if s.tail else " - UNAVAILABLE"))
 
+    blocker = None
+    if args.blocker:
+        blocker = make_blocker(args, nets, rep.text)
+        blocker.cleanup_expired()                      # remove blocks that ended while we were not running
+        if not blocker.enabled:
+            print("WARNING: blocker disabled: %s" % blocker.disabled_reason)
+        orig_record = sa.record_finding
+
+        def record_and_observe(st, rep_, rec, f):
+            orig_record(st, rep_, rec, f)
+            blocker.observe(rec, f)
+        sa.record_finding = record_and_observe
+
     first = next(s.idx for s in sources if s.tail)
     ctx = dict(sources=sources, out_path=out_path, started=time.time(), lps=0.0, paused=False,
-               focus=first, page=0, pp=1, max=False, per_page=args.per_page, detail=None)
+               focus=first, page=0, pp=1, max=False, per_page=args.per_page, detail=None, blocker=blocker)
     try:
         curses.wrapper(run, args, ctx, rep, nets)
     except KeyboardInterrupt:
@@ -561,11 +635,19 @@ def main():
             rep.text("=" * 72)
             rep.text("SUMMARY: [%d] %s (%s)" % (s.idx + 1, s.path, s.kind))
             sa.write_summary(rep, s.st)
+        if blocker:
+            rep.text("")
+            rep.text("BLOCKED IPs at exit:")
+            for line in blocker.list_blocks() or ["none"]:
+                rep.text("  " + line)
         rep.close()
         total = sum(sum(s.st.sev.values()) for s in sources)
         print("Stopped. %d source(s), %d findings in total." % (len(sources), total))
         for s in sources:
             print("  [%d] %-32s lines %-7d findings %d" % (s.idx + 1, s.name, s.st.lines, sum(s.st.sev.values())))
+        if blocker:
+            print("Blocked IPs: %d (remember: expired blocks are removed while the tool runs, "
+                  "or with --blocker-cleanup)" % len(blocker.active_blocks()))
         print("Report saved to %s" % out_path)
     return 0
 

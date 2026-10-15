@@ -1,3 +1,21 @@
+# Reports and generated data (may contain your lab IPs)
 *.txt
 *.jsonl
 *.log
+report*
+socky_blocks.json*
+
+# Test files
+test*.log
+test*.py
+t*.py
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Editor / OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
